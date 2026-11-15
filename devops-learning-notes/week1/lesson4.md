@@ -7,13 +7,24 @@ sudo apt install -y docker.io docker-compose-v2
 sudo systemctl enable --now docker
 sudo docker run --rm hello-world
 ```
-本地没有镜像时会先从 Docker Hub 拉取。输出里能看到 `Hello from Docker!`，以及客户端连上 daemon、拉取镜像、创建容器、把输出流回终端这几步，说明安装可用。
+输出（`hello-world` 节选）：
+```text
+Unable to find image 'hello-world:latest' locally
+latest: Pulling from library/hello-world
+...
+Status: Downloaded newer image for hello-world:latest
+
+Hello from Docker!
+This message shows that your installation appears to be working correctly.
+...
+```
+`apt` 装引擎和 Compose 插件；`systemctl enable --now` 让 dockerd 开机自启并立刻运行。`run --rm` 跑完就删容器。能打出 `Hello from Docker!`，说明客户端、daemon、拉镜像、建容器这条链是通的。
 
 ## 2、免 sudo
 ```bash
 sudo usermod -aG docker $USER
 ```
-重新登录后生效。加入 `docker` 组等同于 root：容器可以挂载宿主机任意目录。这台虚拟机只做实验，可以接受。
+无终端输出；重新登录后，`docker` 命令可不用 `sudo`。加入 `docker` 组等同于 root：容器可以挂载宿主机任意目录。这台虚拟机只做实验，可以接受。
 
 ## 3、端口映射
 ```bash
@@ -22,11 +33,7 @@ curl -v http://127.0.0.1:8080
 docker ps
 docker logs web
 ```
-`-p 8080:80` 是宿主机端口在前、容器端口在后：访问本机 8080，转到容器里的 80。
-
-`docker ps` 的 `PORTS` 列写成 `0.0.0.0:8080->80/tcp` 时，表示宿主机所有地址的 8080 都映射进容器 80。没写绑定地址时，默认是 `0.0.0.0`，局域网也能访问。
-
-`docker logs web` 能看到访问记录，排障时先看它。
+`-p 8080:80` 是宿主机端口在前、容器端口在后：访问本机 8080，转到容器里的 80。`docker ps` 里 `PORTS` 若写成 `0.0.0.0:8080->80/tcp`，表示所有宿主机地址的 8080 都映射进去；未写绑定地址时默认 `0.0.0.0`。`docker logs web` 能看到访问记录，排障时先看它。
 
 实验完清理：
 ```bash
@@ -51,31 +58,34 @@ services:
 volumes:
   pgdata:
 ```
-`127.0.0.1:5432:5432` 只绑本机。不需要对外的服务不要绑 `0.0.0.0`。
-
 ```bash
 cd ~/lab/compose
 docker compose up -d
 docker compose ps
 ```
-实际状态：
+输出（`docker compose ps`）：
 ```text
-NAME           IMAGE         COMMAND                  SERVICE   STATUS          PORTS
-compose-db-1   postgres:16   "docker-entrypoint.s…"   db        Up              127.0.0.1:5432->5432/tcp
+NAME           IMAGE         COMMAND                  SERVICE   CREATED          STATUS          PORTS
+compose-db-1   postgres:16   "docker-entrypoint.s…"   db        51 seconds ago   Up 49 seconds   127.0.0.1:5432->5432/tcp
 ```
-`127.0.0.1:5432->5432/tcp` 表示只有本机能连这个端口。
+`127.0.0.1:5432:5432` 只绑本机；`127.0.0.1:5432->5432/tcp` 表示只有本机能连这个端口。
 
 写入一行数据：
 ```bash
 docker exec -it $(docker compose ps -q db) psql -U postgres -d labdb -c "CREATE TABLE t(id int); INSERT INTO t VALUES (1);"
 ```
-`$(docker compose ps -q db)` 取出正在运行的 db 容器 ID。容器还没起来时这个替换是空的，整条命令会变成 `docker exec -it psql ...`，于是报 `No such container: psql`。先 `docker compose ps` 确认是 Up，再 exec。
+输出：
+```text
+CREATE TABLE
+INSERT 0 1
+```
+`$(docker compose ps -q db)` 取正在运行的 db 容器 ID。若容器还没起来，替换为空，命令变成 `docker exec -it psql ...`，会报 `No such container: psql`。先 `docker compose ps` 确认 Up 再 exec。
 
 刚 `up` 完立刻连，还可能看到：
 ```text
 connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: No such file or directory
 ```
-这是 Postgres 还在初始化，socket 还没建好。等几秒再查。
+Postgres 还在初始化，等几秒再查。
 
 ## 5、数据卷会不会留住数据
 只删容器、保留卷：
@@ -84,7 +94,23 @@ docker compose down
 docker compose up -d
 docker exec -it $(docker compose ps -q db) psql -U postgres -d labdb -c "SELECT * FROM t;"
 ```
-结果仍是 `id = 1`。`down` 删的是容器和网络，`pgdata` 还在，新容器挂上同一卷，数据还在。
+输出（`down` / `up` 过程节选）：
+```text
+[+] Running 2/2
+ ✔ Container compose-db-1   Removed
+ ✔ Network compose_default  Removed
+[+] Running 2/2
+ ✔ Network compose_default  Created
+ ✔ Container compose-db-1   Started
+```
+输出（`SELECT`）：
+```text
+ id
+----
+  1
+(1 row)
+```
+`down` 删容器和网络，命名卷 `pgdata` 还在，新容器挂同一卷，数据仍在。
 
 连卷一起删：
 ```bash
@@ -92,11 +118,21 @@ docker compose down -v
 docker compose up -d
 docker exec -it $(docker compose ps -q db) psql -U postgres -d labdb -c "SELECT * FROM t;"
 ```
-`down -v` 的输出里有 `Volume compose_pgdata Removed`，随后又 `Volume compose_pgdata Created`。再查：
+输出（`down -v` / `up` 节选）：
+```text
+ ✔ Container compose-db-1   Removed
+ ✔ Volume compose_pgdata    Removed
+ ✔ Network compose_default  Removed
+...
+ ✔ Volume compose_pgdata    Created
+ ✔ Container compose-db-1   Started
+```
+输出（再查）：
 ```text
 ERROR:  relation "t" does not exist
+LINE 1: SELECT * FROM t;
+                      ^
 ```
-卷被删掉后，Postgres 重新初始化数据目录，表和数据都没了。
 
 | 操作 | 数据 | 原因 |
 |---|---|---|
@@ -114,7 +150,8 @@ ERROR:  relation "t" does not exist
 ```bash
 ip neigh show 192.168.124.1
 ```
+输出：
 ```text
 192.168.124.1 dev eth0 lladdr 5c:a7:21:c4:a3:dd STALE
 ```
-MAC 前缀 `5c:a7:21` 是 Hyper-V 虚拟交换机常用网段。再加上第三天 ping 到的 TTL=128，`192.168.124.1` 是笔记本上的 Hyper-V 虚拟交换机，不是路由器。虚拟机的流量先到笔记本的虚拟交换机，再由笔记本转出去。
+MAC 前缀 `5c:a7:21` 常见于 Hyper-V 虚拟交换机。结合 lesson3 ping 网关 TTL=128，可判断 `192.168.124.1` 是笔记本上的 Hyper-V 虚拟交换机，不是家用路由器。
